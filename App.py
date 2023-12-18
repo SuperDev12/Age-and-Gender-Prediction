@@ -5,7 +5,6 @@ import pandas as pd
 from PIL import Image
 from io import BytesIO
 import base64
-
 app = Flask(__name__)
 
 gender_model = cv2.dnn.readNetFromCaffe("deploy_gender.prototxt", "gender_net.caffemodel")
