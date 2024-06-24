@@ -77,6 +77,7 @@ import cv2
 import argparse
 from mtcnn import MTCNN
 import numpy as np
+import concurrent.futures
 
 def highlightFace(frame, detector, conf_threshold=0.7):
     faceBoxes = []
@@ -93,41 +94,12 @@ def highlightFace(frame, detector, conf_threshold=0.7):
 def apply_smoothing(current_value, previous_value, alpha=0.7):
     return alpha * current_value + (1 - alpha) * previous_value
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--image')
-args = parser.parse_args()
-
-ageProto = "age_deploy.prototxt"
-ageModel = "age_net.caffemodel"
-genderProto = "gender_deploy.prototxt"
-genderModel = "gender_net.caffemodel"
-
-MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
-ageList = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
-genderList = ['Male', 'Female']
-
-ageNet = cv2.dnn.readNet(ageModel, ageProto)
-genderNet = cv2.dnn.readNet(genderModel, genderProto)
-face_detector = MTCNN()
-
-video = cv2.VideoCapture(args.image if args.image else 0)
-padding = 20
-
-# Initialize smoothing variables
-prev_gender_preds = np.zeros((2,))
-prev_age_preds = np.zeros((8,))
-
-while cv2.waitKey(1) < 0:
-    hasFrame, frame = video.read()
-    if not hasFrame:
-        cv2.waitKey()
-        break
-
+def process_frame(frame, face_detector, ageNet, genderNet, ageList, genderList, prev_gender_preds, prev_age_preds, MODEL_MEAN_VALUES):
+    padding = 20
     resultImg, faceBoxes = highlightFace(frame, face_detector)
     if not faceBoxes:
-        print("No face detected")
-        continue
-
+        return resultImg
+    
     for faceBox in faceBoxes:
         face = frame[max(0, faceBox[1] - padding):min(faceBox[3] + padding, frame.shape[0] - 1),
                      max(0, faceBox[0] - padding):min(faceBox[2] + padding, frame.shape[1] - 1)]
@@ -139,15 +111,57 @@ while cv2.waitKey(1) < 0:
         smoothed_gender_preds = apply_smoothing(genderPreds, prev_gender_preds)
         gender = genderList[smoothed_gender_preds.argmax()]
         prev_gender_preds = smoothed_gender_preds
-        print(f'Gender: {gender}')
 
         ageNet.setInput(blob)
         agePreds = ageNet.forward()[0]
         smoothed_age_preds = apply_smoothing(agePreds, prev_age_preds)
         age = ageList[smoothed_age_preds.argmax()]
         prev_age_preds = smoothed_age_preds
-        print(f'Age: {age[1:-1]} years')
 
         cv2.putText(resultImg, f'{gender}, {age}', (faceBox[0], faceBox[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
     
-    cv2.imshow("Detecting age and gender", resultImg)
+    return resultImg
+
+def main(args):
+    ageProto = "age_deploy.prototxt"
+    ageModel = "age_net.caffemodel"
+    genderProto = "gender_deploy.prototxt"
+    genderModel = "gender_net.caffemodel"
+
+    MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
+    ageList = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
+    genderList = ['Male', 'Female']
+
+    ageNet = cv2.dnn.readNet(ageModel, ageProto)
+    genderNet = cv2.dnn.readNet(genderModel, genderProto)
+    face_detector = MTCNN()
+
+    video = cv2.VideoCapture(args.image if args.image else 0)
+
+    # Initialize smoothing variables
+    prev_gender_preds = np.zeros((2,))
+    prev_age_preds = np.zeros((8,))
+
+    # Asynchronous video processing
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        while cv2.waitKey(1) < 0:
+            hasFrame, frame = video.read()
+            if not hasFrame:
+                cv2.waitKey()
+                break
+            
+            # Submit frame processing to the executor
+            future = executor.submit(process_frame, frame, face_detector, ageNet, genderNet, ageList, genderList, prev_gender_preds, prev_age_preds, MODEL_MEAN_VALUES)
+            resultImg = future.result()  # Get the processed frame
+            
+            cv2.imshow("Detecting age and gender", resultImg)
+
+    # Release video capture and close windows
+    video.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--image')
+    args = parser.parse_args()
+    main(args)
